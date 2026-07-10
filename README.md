@@ -192,6 +192,16 @@ The selected theme is saved automatically and restored on the next launch.
 
 ## Troubleshooting
 
+### Payload starts then returns or screen goes blank
+
+DarkSec-Chat launches like Neon Bikes: it stops the Pager UI services, runs the Python app, writes stdout/stderr to a log, then restores services when Python exits.
+
+Check:
+
+```text
+/tmp/darksec_chat.log
+```
+
 ### Website chat does not connect
 
 - Install `python3-requests`.

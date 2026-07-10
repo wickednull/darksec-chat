@@ -24,6 +24,7 @@ if [ -z "$PAYLOAD_DIR" ]; then
     PAYLOAD_DIR="$(pwd)"
 fi
 DATA_DIR="$PAYLOAD_DIR/data"
+LOG_FILE="/tmp/darksec_chat.log"
 
 cd "$PAYLOAD_DIR" || {
     LOG "red" "ERROR: $PAYLOAD_DIR not found"
@@ -82,7 +83,7 @@ fi
 #
 export PATH="/mmc/usr/bin:$PATH"
 export PYTHONPATH="$PAYLOAD_DIR/lib:$PAYLOAD_DIR:$PYTHONPATH"
-export LD_LIBRARY_PATH="/mmc/usr/lib:$PAYLOAD_DIR/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="/mmc/usr/lib:/mmc/lib:$PAYLOAD_DIR/lib:$LD_LIBRARY_PATH"
 
 # Source config
 if [ -f "$PAYLOAD_DIR/config.sh" ]; then
@@ -155,6 +156,8 @@ if ! python3 -c "import requests" 2>/dev/null; then
     LOG "yellow" "Install: opkg -d mmc install python3-requests"
 fi
 
+PYTHON=$(command -v python3)
+
 # ============================================================
 # CLEANUP
 # ============================================================
@@ -200,8 +203,11 @@ done
 # Create data directory
 mkdir -p "$DATA_DIR" 2>/dev/null
 
-# Stop pager service and take over display
+# Stop services and take over display, matching the Neon Bikes lifecycle.
 SPINNER_ID=$(START_SPINNER "Starting DarkSec-Chat...")
+/etc/init.d/php8-fpm       stop 2>/dev/null
+/etc/init.d/nginx          stop 2>/dev/null
+/etc/init.d/bluetoothd     stop 2>/dev/null
 /etc/init.d/pineapplepager stop 2>/dev/null
 sleep 0.5
 STOP_SPINNER "$SPINNER_ID" 2>/dev/null
@@ -211,7 +217,7 @@ NEXT_PAYLOAD_FILE="$DATA_DIR/.next_payload"
 
 while true; do
     cd "$PAYLOAD_DIR"
-    python3 darksec_chat.py
+    "$PYTHON" "$PAYLOAD_DIR/darksec_chat.py" "$PAYLOAD_DIR/lib" > "$LOG_FILE" 2>&1
     EXIT_CODE=$?
 
     # Exit code 42 = hand off to another payload
@@ -226,5 +232,17 @@ while true; do
 
     break
 done
+
+if [ "$EXIT_CODE" -ne 0 ]; then
+    LOG "DarkSec-Chat exited with code $EXIT_CODE"
+    LOG "Check $LOG_FILE for details"
+fi
+
+sleep 0.5
+
+/etc/init.d/bluetoothd     start 2>/dev/null &
+/etc/init.d/nginx          start 2>/dev/null &
+/etc/init.d/php8-fpm       start 2>/dev/null &
+/etc/init.d/pineapplepager start 2>/dev/null &
 
 exit 0

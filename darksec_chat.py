@@ -19,14 +19,42 @@ from collections import deque
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(SCRIPT_DIR, 'lib'))
+
+PAGERCTL_SEARCH_DIRS = []
+if len(sys.argv) >= 2 and not sys.argv[1].startswith("--"):
+    PAGERCTL_SEARCH_DIRS.append(sys.argv[1])
+PAGERCTL_SEARCH_DIRS += [
+    os.path.join(SCRIPT_DIR, 'lib'),
+    SCRIPT_DIR,
+    "/root/payloads/user/utilities/PAGERCTL",
+    "/mmc/root/payloads/user/utilities/PAGERCTL",
+]
+
+PAGERCTL_DIR = None
+for d in PAGERCTL_SEARCH_DIRS:
+    if (
+        os.path.isfile(os.path.join(d, "pagerctl.py")) and
+        os.path.isfile(os.path.join(d, "libpagerctl.so"))
+    ):
+        PAGERCTL_DIR = d
+        break
+
+if PAGERCTL_DIR is None:
+    print("ERROR: pagerctl.py / libpagerctl.so not found")
+    print("Searched:", PAGERCTL_SEARCH_DIRS)
+    sys.exit(1)
+
+os.environ["LD_LIBRARY_PATH"] = (
+    PAGERCTL_DIR + ":/mmc/usr/lib:/mmc/lib:" +
+    os.environ.get("LD_LIBRARY_PATH", "")
+)
+sys.path.insert(0, PAGERCTL_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
 try:
     from pagerctl import Pager
-except ImportError:
-    print("ERROR: pagerctl not found. Install from:")
-    print("  https://github.com/pineapple-pager-projects/pineapple_pager_pagerctl")
+except (ImportError, OSError) as e:
+    print(f"ERROR: Failed to import pagerctl: {e}")
     sys.exit(1)
 
 try:
@@ -987,6 +1015,8 @@ def main():
     cfg = parse_config()
     username = cfg['username']
     os.makedirs(CHAT_DIR, exist_ok=True)
+    backend = None
+    display = None
 
     try:
         with open(USERNAME_FILE) as f:
@@ -996,10 +1026,9 @@ def main():
     except (FileNotFoundError, OSError):
         pass
 
-    backend = ChatBackend(username, cfg)
-    display = ChatDisplay()
-
     try:
+        backend = ChatBackend(username, cfg)
+        display = ChatDisplay()
         display.splash()
 
         # Username prompt
@@ -1077,22 +1106,27 @@ def main():
         pass
     except Exception as e:
         try:
-            display.p.clear(0x0000)
-            display.p.draw_text_centered(60, "Error:", Pager.RED, 2)
-            display.p.draw_text_centered(90, str(e)[:40], Pager.WHITE, 1)
-            display.p.draw_text_centered(120, "Check logs", Pager.GRAY, 1)
-            display.p.flip()
-            time.sleep(3)
+            if display and display.p:
+                display.p.clear(0x0000)
+                display.p.draw_text_centered(60, "Error:", Pager.RED, 2)
+                display.p.draw_text_centered(90, str(e)[:40], Pager.WHITE, 1)
+                display.p.draw_text_centered(120, "Check logs", Pager.GRAY, 1)
+                display.p.flip()
+                time.sleep(3)
+            else:
+                print(f"Error before display init: {e}")
         except Exception:
             print(f"Error: {e}")
     finally:
-        backend.stop()
-        try:
-            with open(MESSAGES_FILE, 'w') as f:
-                json.dump(backend.messages(), f)
-        except OSError:
-            pass
-        display.cleanup()
+        if backend:
+            backend.stop()
+            try:
+                with open(MESSAGES_FILE, 'w') as f:
+                    json.dump(backend.messages(), f)
+            except OSError:
+                pass
+        if display:
+            display.cleanup()
 
 
 if __name__ == "__main__":
