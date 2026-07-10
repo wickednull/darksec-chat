@@ -84,6 +84,10 @@ CHAT_DIR = "/root/loot/darksec-chat"
 MESSAGES_FILE = os.path.join(CHAT_DIR, 'messages.json')
 USERNAME_FILE = os.path.join(CHAT_DIR, 'username.txt')
 THEME_FILE = os.path.join(CHAT_DIR, 'theme.txt')
+APP_LOG_FILE = os.path.join(CHAT_DIR, 'darksec_chat_app.log')
+INPUT_REQUEST_FILE = os.path.join(SCRIPT_DIR, 'data', 'input_request')
+PENDING_MESSAGE_FILE = os.path.join(SCRIPT_DIR, 'data', 'pending_message.txt')
+INPUT_REQUEST_EXIT = 43
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -250,6 +254,37 @@ def display_time(value=None):
         except (AttributeError, ValueError):
             pass
     return datetime.now().strftime('%H:%M')
+
+
+def app_log(message):
+    try:
+        os.makedirs(CHAT_DIR, exist_ok=True)
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open(APP_LOG_FILE, 'a') as f:
+            f.write(f"[{ts}] {message}\n")
+    except OSError:
+        pass
+
+
+def request_system_text(kind):
+    try:
+        os.makedirs(os.path.dirname(INPUT_REQUEST_FILE), exist_ok=True)
+        with open(INPUT_REQUEST_FILE, 'w') as f:
+            f.write(kind)
+        app_log(f"request_system_text kind={kind}")
+    except OSError as e:
+        app_log(f"request_system_text failed kind={kind} error={e}")
+    raise SystemExit(INPUT_REQUEST_EXIT)
+
+
+def read_pending_message():
+    try:
+        with open(PENDING_MESSAGE_FILE) as f:
+            text = f.read().strip()
+        os.remove(PENDING_MESSAGE_FILE)
+        return text
+    except (FileNotFoundError, OSError):
+        return ''
 
 
 def valid_theme_name(name):
@@ -423,10 +458,14 @@ class ChatBackend:
         t = text.strip()
         if not t:
             return
+        app_log(f"send_message start len={len(t)} web_enabled={self._web_enabled} peers={self.peer_count()}")
         self.add_message(self.username, t, 'self')
+        app_log("send_message after_add_self")
         self._mesh_send(t)
+        app_log("send_message after_mesh")
         if self._web_enabled:
             self._web_post(t)
+        app_log("send_message done")
 
     # -- Mesh --
 
@@ -517,6 +556,7 @@ class ChatBackend:
             self._mesh_ok = bool(self._peers)
 
     def _mesh_send(self, text):
+        app_log(f"mesh_send start len={len(text)}")
         p = json.dumps({"type":"chat","text":text})
         with self._peer_lock:
             dead = []
@@ -524,10 +564,12 @@ class ChatBackend:
                 try:
                     sock.send(p.encode())
                 except OSError:
+                    app_log(f"mesh_send peer_failed ip={ip}")
                     dead.append(ip)
             for ip in dead:
                 self._peers.pop(ip, None)
             self._mesh_ok = bool(self._peers)
+        app_log(f"mesh_send done peers={self.peer_count()}")
 
     # -- Web --
 
@@ -570,22 +612,27 @@ class ChatBackend:
                 if t:
                     self.add_message(msg.get('username','Web'), t, 'web', msg.get('created_at'))
                     self._mesh_send(f"[Web] {msg.get('username','WebUser')}: {t}")
-        except (OSError, json.JSONDecodeError, ValueError, HTTPError, URLError):
+        except (OSError, json.JSONDecodeError, ValueError, HTTPError, URLError) as e:
+            app_log(f"web_poll error={e}")
             self._web_ok = False
         except Exception as e:
             if requests is not None and isinstance(e, requests.RequestException):
+                app_log(f"web_poll requests_error={e}")
                 self._web_ok = False
             else:
+                app_log(f"web_poll unexpected_error={e}")
                 self._web_ok = False
 
     def _web_post(self, text):
         try:
+            app_log(f"web_post start len={len(text)} url={self._web_url}")
             http_post_json(self._web_url, {"username":self.username,"message":text}, timeout=5)
-        except (OSError, HTTPError, URLError):
+            app_log("web_post ok")
+        except (OSError, HTTPError, URLError) as e:
+            app_log(f"web_post error={e}")
             pass
         except Exception as e:
-            if requests is None or not isinstance(e, requests.RequestException):
-                pass
+            app_log(f"web_post unexpected_error={e}")
 
 
 # ===================================================================
@@ -1103,6 +1150,10 @@ def main():
             pass
 
         backend.add_message("System", "Chat ready. Press A to send.", "system")
+        pending_message = read_pending_message()
+        if pending_message:
+            app_log(f"pending_message found len={len(pending_message)}")
+            backend.send_message(pending_message)
 
         scroll = 0
         running = True
@@ -1125,11 +1176,7 @@ def main():
             elif pressed & Pager.BTN_DOWN:
                 scroll += 1
             elif pressed & Pager.BTN_A:
-                display.p.clear(display.theme['BG'])
-                t = display.keyboard()
-                if t:
-                    backend.send_message(t)
-                    scroll = 0
+                request_system_text('message')
             elif pressed & Pager.BTN_B:
                 a = display.pause_menu(pc, wo, len(msgs), backend.username, get_local_ip())
                 if a in ('exit', 'menu'): running = False

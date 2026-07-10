@@ -252,6 +252,8 @@ STOP_SPINNER "$SPINNER_ID" 2>/dev/null
 
 # Payload loop -- supports exit code 42 handoff
 NEXT_PAYLOAD_FILE="$DATA_DIR/.next_payload"
+INPUT_REQUEST_FILE="$DATA_DIR/input_request"
+PENDING_MESSAGE_FILE="$DATA_DIR/pending_message.txt"
 
 while true; do
     cd "$PAYLOAD_DIR"
@@ -261,6 +263,38 @@ while true; do
     } >> "$LOG_FILE" 2>&1
     "$PYTHON" -u "$PAYLOAD_DIR/darksec_chat.py" "$RUNTIME_LIB_DIR" >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
+
+    if [ "$EXIT_CODE" -eq 43 ]; then
+        {
+            echo "step=input_request_exit"
+            cat "$INPUT_REQUEST_FILE" 2>/dev/null
+            sync
+        } >> "$LOG_FILE" 2>&1
+
+        /etc/init.d/pineapplepager start 2>/dev/null
+        sleep 0.5
+
+        REQUEST_KIND="$(cat "$INPUT_REQUEST_FILE" 2>/dev/null)"
+        rm -f "$INPUT_REQUEST_FILE"
+
+        if [ "$REQUEST_KIND" = "message" ]; then
+            USER_TEXT=$(TEXT_PICKER "DarkSec message" "")
+            PICKER_CODE=$?
+            {
+                echo "step=text_picker_done code=$PICKER_CODE length=${#USER_TEXT}"
+                sync
+            } >> "$LOG_FILE" 2>&1
+            if [ "$PICKER_CODE" -eq 0 ] && [ -n "$USER_TEXT" ]; then
+                printf "%s" "$USER_TEXT" > "$PENDING_MESSAGE_FILE"
+            fi
+        fi
+
+        SPINNER_ID=$(START_SPINNER "Returning to DarkSec...")
+        /etc/init.d/pineapplepager stop 2>/dev/null
+        sleep 0.5
+        STOP_SPINNER "$SPINNER_ID" 2>/dev/null
+        continue
+    fi
 
     # Exit code 42 = hand off to another payload
     if [ "$EXIT_CODE" -eq 42 ] && [ -f "$NEXT_PAYLOAD_FILE" ]; then

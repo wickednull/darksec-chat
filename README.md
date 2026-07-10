@@ -4,7 +4,7 @@ DarkSec-Chat is a WiFi Pineapple Pager payload that lets the Pager join the Dark
 
 ## What Works
 
-- Pager LCD chat UI with message history, scrolling, pause menu, and on-screen keyboard.
+- Pager LCD chat UI with message history, scrolling, pause menu, and the built-in Pager text picker for composing messages.
 - Four selectable UI themes: DarkSec, Amber CRT, Matrix, and Ice.
 - Direct website chat bridge for the DarkSec `/api/chat` endpoint.
 - Efficient polling with `GET /api/chat?after=<last_id>` after the first sync.
@@ -136,17 +136,9 @@ The bridge also accepts a wrapped response:
 | Button | Action |
 | --- | --- |
 | UP / DOWN | Scroll chat history |
-| A / GREEN | Open keyboard and send a message |
+| A / GREEN | Open the built-in Pager text picker and send a message |
 | B / RED | Open pause menu |
 | POWER | Exit |
-
-Keyboard controls:
-
-| Button | Action |
-| --- | --- |
-| DPAD | Move between keys |
-| A / GREEN | Select highlighted key |
-| B / RED | Backspace or cancel |
 
 Pause menu controls:
 
@@ -173,6 +165,8 @@ All peers must use the same ports. Mesh messages are sent to connected peers. We
 | Message history | `/root/loot/darksec-chat/messages.json` |
 | Username | `/root/loot/darksec-chat/username.txt` |
 | Selected theme | `/root/loot/darksec-chat/theme.txt` |
+| Launcher log | `/root/loot/darksec-chat/darksec_chat.log` |
+| App/send debug log | `/root/loot/darksec-chat/darksec_chat_app.log` |
 
 The message history keeps the most recent 500 messages.
 
@@ -199,6 +193,7 @@ Check:
 
 ```text
 /root/loot/darksec-chat/darksec_chat.log
+/root/loot/darksec-chat/darksec_chat_app.log
 ```
 
 ### Website chat does not connect
