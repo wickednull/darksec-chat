@@ -24,7 +24,8 @@ if [ -z "$PAYLOAD_DIR" ]; then
     PAYLOAD_DIR="$(pwd)"
 fi
 DATA_DIR="$PAYLOAD_DIR/data"
-LOG_FILE="/tmp/darksec_chat.log"
+LOG_DIR="/root/loot/darksec-chat"
+LOG_FILE="$LOG_DIR/darksec_chat.log"
 
 cd "$PAYLOAD_DIR" || {
     LOG "red" "ERROR: $PAYLOAD_DIR not found"
@@ -150,12 +151,6 @@ if [ "$NEED_PYTHON" = true ] || [ "$NEED_CTYPES" = true ]; then
     done
 fi
 
-# Check for requests (optional, enables web bridge)
-if ! python3 -c "import requests" 2>/dev/null; then
-    LOG "yellow" "python3-requests not found (web bridge disabled)"
-    LOG "yellow" "Install: opkg -d mmc install python3-requests"
-fi
-
 PYTHON=$(command -v python3)
 
 # ============================================================
@@ -200,14 +195,26 @@ while true; do
     esac
 done
 
-# Create data directory
+# Create data and log directories before any service changes.
 mkdir -p "$DATA_DIR" 2>/dev/null
+mkdir -p "$LOG_DIR" 2>/dev/null
 
-# Stop services and take over display, matching the Neon Bikes lifecycle.
+{
+    echo "=== DarkSec-Chat launch $(date) ==="
+    echo "step=after_green_button"
+    echo "PAYLOAD_DIR=$PAYLOAD_DIR"
+    echo "PAGERCTL_PY=$PAGERCTL_PY"
+    echo "PAGERCTL_SO=$PAGERCTL_SO"
+    echo "PYTHON=$PYTHON"
+    sync
+} > "$LOG_FILE" 2>&1
+
+# Stop only the Pager UI service and take over display.
 SPINNER_ID=$(START_SPINNER "Starting DarkSec-Chat...")
-/etc/init.d/php8-fpm       stop 2>/dev/null
-/etc/init.d/nginx          stop 2>/dev/null
-/etc/init.d/bluetoothd     stop 2>/dev/null
+{
+    echo "step=before_pineapplepager_stop"
+    sync
+} >> "$LOG_FILE" 2>&1
 /etc/init.d/pineapplepager stop 2>/dev/null
 sleep 0.5
 STOP_SPINNER "$SPINNER_ID" 2>/dev/null
@@ -217,7 +224,11 @@ NEXT_PAYLOAD_FILE="$DATA_DIR/.next_payload"
 
 while true; do
     cd "$PAYLOAD_DIR"
-    "$PYTHON" "$PAYLOAD_DIR/darksec_chat.py" "$PAYLOAD_DIR/lib" > "$LOG_FILE" 2>&1
+    {
+        echo "step=before_python_launch"
+        sync
+    } >> "$LOG_FILE" 2>&1
+    "$PYTHON" -u "$PAYLOAD_DIR/darksec_chat.py" "$PAYLOAD_DIR/lib" >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
 
     # Exit code 42 = hand off to another payload
@@ -240,9 +251,6 @@ fi
 
 sleep 0.5
 
-/etc/init.d/bluetoothd     start 2>/dev/null &
-/etc/init.d/nginx          start 2>/dev/null &
-/etc/init.d/php8-fpm       start 2>/dev/null &
 /etc/init.d/pineapplepager start 2>/dev/null &
 
 exit 0

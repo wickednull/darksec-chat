@@ -59,9 +59,8 @@ Your Pager shell should show the payload files together:
 - Python 3.
 - `python3-ctypes`.
 - `libpagerctl.so` and `pagerctl.py`.
-- `python3-requests` for website chat support.
 
-If Python 3 or `ctypes` is missing, the payload can offer to install them with `opkg`. If `python3-requests` is missing, mesh chat still works but website chat is disabled.
+If Python 3 or `ctypes` is missing, the payload can offer to install them with `opkg`. Website chat uses `python3-requests` if it is installed, but it also has a built-in `urllib` fallback, so `python3-requests` is not required.
 
 ## Configure Website Chat
 
@@ -194,17 +193,16 @@ The selected theme is saved automatically and restored on the next launch.
 
 ### Payload starts then returns or screen goes blank
 
-DarkSec-Chat launches like Neon Bikes: it stops the Pager UI services, runs the Python app, writes stdout/stderr to a log, then restores services when Python exits.
+DarkSec-Chat writes a persistent launch log before it takes over the display, then stops the Pager UI service, runs the Python app, and restores the service when Python exits.
 
 Check:
 
 ```text
-/tmp/darksec_chat.log
+/root/loot/darksec-chat/darksec_chat.log
 ```
 
 ### Website chat does not connect
 
-- Install `python3-requests`.
 - Confirm the Pager has internet access.
 - Confirm the endpoint responds to `GET /api/chat`.
 - If using your own website, confirm it supports `GET /api/chat?after=<id>`.

@@ -10,13 +10,15 @@ Controls:
   PWR          Exit
 
 Dependencies: python3, python3-ctypes, pagerctl
-Optional: python3-requests (enables the website chat bridge)
+Optional: python3-requests (used if installed; urllib fallback is built in)
 """
 
 import os, sys, json, time, socket, threading
 from datetime import datetime
 from collections import deque
 from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -274,6 +276,41 @@ def next_theme_name(current, direction=1):
     return THEME_ORDER[(idx + direction) % len(THEME_ORDER)]
 
 
+class HttpJsonResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def http_get_json(url, timeout=5):
+    if requests is not None:
+        return requests.get(url, timeout=timeout)
+    req = urllib_request.Request(url, headers={'Accept': 'application/json'})
+    with urllib_request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode('utf-8')
+        status = getattr(resp, 'status', resp.getcode())
+        return HttpJsonResponse(status, json.loads(body or '[]'))
+
+
+def http_post_json(url, payload, timeout=5):
+    if requests is not None:
+        return requests.post(url, json=payload, timeout=timeout)
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib_request.Request(
+        url,
+        data=data,
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+        method='POST',
+    )
+    with urllib_request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode('utf-8')
+        status = getattr(resp, 'status', resp.getcode())
+        return HttpJsonResponse(status, json.loads(body or '{}'))
+
+
 # ===================================================================
 # Config
 # ===================================================================
@@ -334,7 +371,7 @@ class ChatBackend:
             url = self.DARKSEC_URL
         self._web_url = url
         self._web_ok = False
-        self._web_enabled = bool(requests and url)
+        self._web_enabled = bool(url)
         self._web_seen = set()
         self._web_last_id = 0
 
@@ -510,7 +547,7 @@ class ChatBackend:
 
     def _poll_web_once(self):
         try:
-            r = requests.get(self._web_poll_url(), timeout=5)
+            r = http_get_json(self._web_poll_url(), timeout=5)
             if r.status_code != 200:
                 self._web_ok = False
                 return
@@ -533,16 +570,22 @@ class ChatBackend:
                 if t:
                     self.add_message(msg.get('username','Web'), t, 'web', msg.get('created_at'))
                     self._mesh_send(f"[Web] {msg.get('username','WebUser')}: {t}")
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError, ValueError, HTTPError, URLError):
             self._web_ok = False
-        except requests.RequestException:
-            self._web_ok = False
+        except Exception as e:
+            if requests is not None and isinstance(e, requests.RequestException):
+                self._web_ok = False
+            else:
+                self._web_ok = False
 
     def _web_post(self, text):
         try:
-            requests.post(self._web_url, json={"username":self.username,"message":text}, timeout=5)
-        except (OSError, requests.RequestException):
+            http_post_json(self._web_url, {"username":self.username,"message":text}, timeout=5)
+        except (OSError, HTTPError, URLError):
             pass
+        except Exception as e:
+            if requests is None or not isinstance(e, requests.RequestException):
+                pass
 
 
 # ===================================================================
