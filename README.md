@@ -298,5 +298,3 @@ PAGERCTL remains governed by its included MIT license and original
 `Copyright (c) 2025 brAinphreAk` notice. Preserve that notice when
 redistributing `pagerctl.py` or PAGERCTL components.
 
-No broader project license is asserted here beyond licenses already attached
-to third-party components. 
