@@ -299,5 +299,4 @@ PAGERCTL remains governed by its included MIT license and original
 redistributing `pagerctl.py` or PAGERCTL components.
 
 No broader project license is asserted here beyond licenses already attached
-to third-party components. Add a root project license before redistributing the
-entire repository under a single set of terms.
+to third-party components. 
