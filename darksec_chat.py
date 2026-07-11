@@ -929,7 +929,7 @@ class ChatDisplay:
         lines = []
         # Bound pixel measurement and wrapping work per frame. The complete
         # recent history remains persisted; the LCD shows the newest 50 items.
-        for m in reversed(msgs[-50:]):
+        for m in msgs[-50:]:
             s = m.get('sender','?')
             text = m.get('text','')
             tm = m.get('time','')
@@ -960,6 +960,7 @@ class ChatDisplay:
 
         ms = max(0, len(lines)-mv)
         scroll = max(0, min(scroll, ms))
+        self._max_scroll = ms
 
         y = self.HEADER_H + 1
         for i in range(scroll, min(scroll+mv, len(lines))):
@@ -1270,16 +1271,25 @@ def main():
             app_log(f"pending_message found len={len(pending_message)}")
             backend.send_message(pending_message)
 
-        scroll = 0
+        # Start at the bottom of the chronological transcript.
+        scroll = 10**9
         running = True
         last_save = time.time()
         last_render = 0.0
         last_render_state = None
+        last_message_count = 0
 
         while running:
             msgs = backend.messages()
             pc = backend.peer_count()
             wo = backend.web_connected()
+            if len(msgs) != last_message_count:
+                # Follow new messages only when already at the bottom. Preserve
+                # the reader's position when they have scrolled into history.
+                max_scroll = getattr(display, '_max_scroll', 0)
+                if scroll >= max_scroll:
+                    scroll = 10**9
+                last_message_count = len(msgs)
             # LCD flips are relatively expensive on the Pager.  Render only
             # when visible state changes, plus a slow safety refresh, instead
             # of repainting the complete screen roughly 50 times per second.
@@ -1310,7 +1320,7 @@ def main():
                 if message:
                     app_log(f"inline keyboard accepted len={len(message)}")
                     backend.send_message(message)
-                    scroll = 0
+                    scroll = 10**9
                     last_render_state = None
                 else:
                     app_log("inline keyboard closed empty")

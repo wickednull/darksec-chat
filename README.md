@@ -16,6 +16,10 @@ history, scrolling, brightness controls, and all four visual themes.
 The pause menu retains DarkSec, Amber CRT, Matrix, and Ice themes. The selected
 theme is stored at `/root/loot/darksec-chat/theme.txt`.
 
+Messages are displayed chronologically with the newest messages at the bottom.
+The view follows incoming messages while at the bottom and preserves the
+current position when reviewing older history.
+
 The keyboard uses large, screen-filling keys and defaults to lowercase.
 Navigate with the D-pad, press A to select, use SHIFT/SHIFT^ to toggle letter
 case, press B to erase, and choose SEND from the bottom action row.
