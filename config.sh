@@ -16,3 +16,7 @@ export USERNAME="PagerUser"
 # Mesh networking ports (must match other peers for mesh discovery)
 export UDP_PORT=9999
 export TCP_PORT=9998
+
+# Required for mesh networking. Use the same long random value on trusted
+# Pagers. Mesh stays disabled when this is empty or shorter than 32 characters.
+export MESH_SHARED_KEY=""

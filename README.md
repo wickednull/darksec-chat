@@ -24,9 +24,11 @@ fast enough for actual handheld use.
 - Retain message history, identity, theme, and diagnostic logs on-device.
 - Stay usable when the website is unreachable by preserving local peer comms.
 
-This is a communications payload—not an encrypted messenger. Website traffic
-uses HTTPS, but local mesh traffic is currently plaintext and unauthenticated.
-Do not treat it as suitable for sensitive operational traffic.
+This is a communications payload with encrypted local mesh support. Website traffic
+uses HTTPS. Local mesh traffic requires a shared key and uses versioned
+ChaCha20 encryption with HMAC-SHA256 authentication; mesh is disabled otherwise.
+The public website bridge still lacks end-to-end encryption and authenticated
+user identities, so do not use that bridge for sensitive traffic.
 
 ## Capabilities
 
@@ -117,6 +119,11 @@ or firewall rules may block UDP `9999` or TCP `9998`.
 | `SHIFT^` | Uppercase is active |
 | `SEND` | Submit message |
 
+Horizontal keyboard navigation wraps at both ends of every row. For example,
+moving right from `P` selects `Q`, while moving left from `Q` selects `P`.
+Vertical navigation also wraps: moving up from the top character row reaches
+the action row, and moving down from the action row returns to the top.
+
 ### Pause menu
 
 | Control | Action |
@@ -155,7 +162,8 @@ Copy the payload into a user payload directory on the Pager:
 ```
 
 The directory name may differ. The launcher first uses Hak5's `_PAYLOAD_HOME`
-and retains known-location fallbacks for compatibility.
+or its own real directory and retains known-location fallbacks for compatibility.
+This prevents an older parallel installation from being launched accidentally.
 
 ### Requirements
 
@@ -165,6 +173,10 @@ and retains known-location fallbacks for compatibility.
 - `pagerctl.py`
 - `libpagerctl.so`
 - Internet access for the DarkSec website bridge
+
+The payload does not use or require the Python `requests` package. HTTP uses
+Python's standard `urllib.request` module and automatically falls back to the
+Pager's `curl` command.
 
 The launcher searches the payload, standard PAGERCTL utility locations, and
 system library locations. It stages `pagerctl.py` and `libpagerctl.so` together
@@ -182,6 +194,17 @@ export WEB_API_URL=""
 export USERNAME="PagerUser"
 export UDP_PORT=9999
 export TCP_PORT=9998
+export MESH_SHARED_KEY=""
+```
+
+Mesh networking is disabled until `MESH_SHARED_KEY` contains at least 32
+characters. Generate a 32-byte random key and copy the same value to every trusted
+Pager. Discovery, handshakes, and messages use ChaCha20 encryption with
+HMAC-SHA256 authentication and reject stale or replayed packets. This protocol
+requires matching current DarkSec-Chat versions and shared keys on all peers.
+
+```sh
+openssl rand -hex 32
 ```
 
 An empty `WEB_API_URL` selects:
@@ -263,14 +286,15 @@ timeout failure.
 ## Security notes
 
 - The DarkSec website API currently accepts an unverified username.
-- Local UDP presence announcements are unauthenticated.
-- Local TCP peer messages are plaintext and unauthenticated.
-- Any host on the subnet can potentially imitate a peer.
-- There is no end-to-end encryption.
+- Local mesh traffic is encrypted and authenticated when a shared key is
+  configured.
+- Mesh networking stays disabled when no sufficiently long shared key exists.
+- The website API is HTTPS transport-encrypted but does not currently provide
+  end-to-end message encryption or authenticated user identities.
 - Use only on networks and systems you own or are authorized to operate on.
 
-Future hardening candidates include signed peer identities, authenticated
-encryption, replay protection, and an optional authenticated pub/sub transport.
+Future hardening candidates include per-device identities, key rotation, and an
+optional authenticated pub/sub transport.
 
 ## Credits and attribution
 

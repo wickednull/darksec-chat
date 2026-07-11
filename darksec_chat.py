@@ -14,11 +14,53 @@ HTTP transport: urllib.request with an automatic curl fallback
 """
 
 import os, sys, json, time, socket, threading, shutil, subprocess, traceback
+import base64, hashlib, hmac, secrets, struct
 from datetime import datetime
 from collections import deque
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_VERSION = "3.1.0"
+
+
+def _rotl32(value, count):
+    return ((value << count) & 0xffffffff) | (value >> (32 - count))
+
+
+def _chacha20_block(key, counter, nonce):
+    """RFC 8439 ChaCha20 block function using only the Python standard library."""
+    constants = (0x61707865, 0x3320646e, 0x79622d32, 0x6b206574)
+    state = list(constants + struct.unpack('<8I', key) +
+                 (counter,) + struct.unpack('<3I', nonce))
+    working = list(state)
+
+    def quarter(a, b, c, d):
+        working[a] = (working[a] + working[b]) & 0xffffffff
+        working[d] = _rotl32(working[d] ^ working[a], 16)
+        working[c] = (working[c] + working[d]) & 0xffffffff
+        working[b] = _rotl32(working[b] ^ working[c], 12)
+        working[a] = (working[a] + working[b]) & 0xffffffff
+        working[d] = _rotl32(working[d] ^ working[a], 8)
+        working[c] = (working[c] + working[d]) & 0xffffffff
+        working[b] = _rotl32(working[b] ^ working[c], 7)
+
+    for _ in range(10):
+        quarter(0, 4, 8, 12); quarter(1, 5, 9, 13)
+        quarter(2, 6, 10, 14); quarter(3, 7, 11, 15)
+        quarter(0, 5, 10, 15); quarter(1, 6, 11, 12)
+        quarter(2, 7, 8, 13); quarter(3, 4, 9, 14)
+    return struct.pack('<16I', *(
+        (working[i] + state[i]) & 0xffffffff for i in range(16)))
+
+
+def _chacha20_xor(key, nonce, data):
+    output = bytearray(len(data))
+    for offset in range(0, len(data), 64):
+        block = _chacha20_block(key, 1 + offset // 64, nonce)
+        chunk = data[offset:offset + 64]
+        for index, value in enumerate(chunk):
+            output[offset + index] = value ^ block[index]
+    return bytes(output)
 
 PAGERCTL_SEARCH_DIRS = []
 if len(sys.argv) >= 2 and not sys.argv[1].startswith("--"):
@@ -313,7 +355,7 @@ class DarkSecHTTP:
     def request(self, method, url, data=None, headers=None):
         headers = dict(headers or {})
         headers.setdefault('Accept', 'application/json')
-        headers.setdefault('User-Agent', 'DarkSec-Chat-Pager/2.0')
+        headers.setdefault('User-Agent', 'DarkSec-Chat-Pager/' + APP_VERSION)
         body = None
         if data is not None:
             body = json.dumps(data).encode('utf-8')
@@ -406,6 +448,7 @@ def parse_config():
         'username': 'PagerUser',
         'udp_port': 9999,
         'tcp_port': 9998,
+        'mesh_shared_key': '',
     }
     config_path = os.path.join(SCRIPT_DIR, 'config.sh')
     try:
@@ -425,6 +468,8 @@ def parse_config():
                         cfg['udp_port'] = int(v) if v.isdigit() else 9999
                     elif k == 'TCP_PORT':
                         cfg['tcp_port'] = int(v) if v.isdigit() else 9998
+                    elif k == 'MESH_SHARED_KEY':
+                        cfg['mesh_shared_key'] = v
     except FileNotFoundError:
         pass
     return cfg
@@ -443,6 +488,10 @@ class ChatBackend:
         self.username = username
         self.udp_port = cfg['udp_port']
         self.tcp_port = cfg['tcp_port']
+        self._mesh_key = cfg.get('mesh_shared_key', '').encode('utf-8')
+        self._mesh_enabled = len(self._mesh_key) >= 32
+        self._mesh_enc_key = hashlib.sha256(b'darksec-enc\0' + self._mesh_key).digest()
+        self._mesh_mac_key = hashlib.sha256(b'darksec-mac\0' + self._mesh_key).digest()
         self.running = False
 
         self._msgs = deque(maxlen=500)
@@ -450,6 +499,8 @@ class ChatBackend:
         self._peers = {}
         self._peer_lock = threading.Lock()
         self._mesh_ok = False
+        self._seen_nonces = {}
+        self._nonce_lock = threading.Lock()
 
         url = cfg['web_api_url']
         if not url or 'example.com' in url:
@@ -463,12 +514,15 @@ class ChatBackend:
 
     def start(self):
         self.running = True
-        t = threading.Thread(target=self._mesh_broadcast, daemon=True)
-        t.start()
-        t = threading.Thread(target=self._mesh_listener, daemon=True)
-        t.start()
-        t = threading.Thread(target=self._mesh_tcp_server, daemon=True)
-        t.start()
+        if self._mesh_enabled:
+            t = threading.Thread(target=self._mesh_broadcast, daemon=True)
+            t.start()
+            t = threading.Thread(target=self._mesh_listener, daemon=True)
+            t.start()
+            t = threading.Thread(target=self._mesh_tcp_server, daemon=True)
+            t.start()
+        else:
+            app_log("mesh disabled: MESH_SHARED_KEY must be at least 32 characters")
         if self._web_enabled:
             t = threading.Thread(target=self._web_poll, daemon=True)
             t.start()
@@ -489,6 +543,62 @@ class ChatBackend:
 
     def mesh_connected(self):
         return self._mesh_ok
+
+    def _secure_packet(self, packet):
+        """Encrypt then authenticate one versioned mesh packet."""
+        timestamp = int(time.time())
+        nonce = secrets.token_bytes(12)
+        plaintext = json.dumps(
+            packet, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        ciphertext = _chacha20_xor(self._mesh_enc_key, nonce, plaintext)
+        nonce_text = base64.b64encode(nonce).decode('ascii')
+        ciphertext_text = base64.b64encode(ciphertext).decode('ascii')
+        authenticated = ('1|%s|%s|%s' % (
+            timestamp, nonce_text, ciphertext_text)).encode('ascii')
+        mac = hmac.new(
+            self._mesh_mac_key, authenticated, hashlib.sha256).hexdigest()
+        return {'v': 1, 'ts': timestamp, 'nonce': nonce_text,
+                'ciphertext': ciphertext_text, 'mac': mac}
+
+    def _verify_packet(self, packet):
+        if not self._mesh_enabled or not isinstance(packet, dict):
+            return False
+        mac = packet.get('mac')
+        nonce_text = packet.get('nonce')
+        ciphertext_text = packet.get('ciphertext')
+        timestamp = packet.get('ts')
+        if (packet.get('v') != 1 or not isinstance(mac, str) or
+                not isinstance(nonce_text, str) or
+                not isinstance(ciphertext_text, str) or
+                not isinstance(timestamp, int)):
+            return None
+        now = int(time.time())
+        if abs(now - timestamp) > 30:
+            return None
+        authenticated = ('1|%s|%s|%s' % (
+            timestamp, nonce_text, ciphertext_text)).encode('ascii')
+        expected = hmac.new(
+            self._mesh_mac_key, authenticated, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(mac, expected):
+            return None
+        with self._nonce_lock:
+            if nonce_text in self._seen_nonces:
+                return None
+            self._seen_nonces[nonce_text] = timestamp
+            if len(self._seen_nonces) > 512:
+                cutoff = now - 30
+                self._seen_nonces = {
+                    n: ts for n, ts in self._seen_nonces.items() if ts >= cutoff}
+        try:
+            nonce = base64.b64decode(nonce_text, validate=True)
+            ciphertext = base64.b64decode(ciphertext_text, validate=True)
+            if len(nonce) != 12 or len(ciphertext) > 8192:
+                return None
+            plaintext = _chacha20_xor(self._mesh_enc_key, nonce, ciphertext)
+            decoded = json.loads(plaintext.decode('utf-8'))
+            return decoded if isinstance(decoded, dict) else None
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
 
     def restore_messages(self, saved):
         with self._msg_lock:
@@ -534,9 +644,10 @@ class ChatBackend:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         s.settimeout(1)
-        data = json.dumps({"type":"presence","username":self.username,"ip":get_local_ip()})
         while self.running:
             try:
+                data = json.dumps(self._secure_packet(
+                    {"type":"presence","username":self.username,"ip":get_local_ip()}))
                 s.sendto(data.encode(), ('<broadcast>', self.udp_port))
             except OSError:
                 pass
@@ -554,8 +665,11 @@ class ChatBackend:
                 if addr[0] == local:
                     continue
                 m = json.loads(d.decode())
-                if m.get('type') == 'presence' and m.get('username') != self.username:
-                    ip = m.get('ip', addr[0])
+                m = self._verify_packet(m)
+                if (m and m.get('type') == 'presence' and
+                        m.get('username') != self.username):
+                    # Never trust a claimed address inside a broadcast packet.
+                    ip = addr[0]
                     name = m.get('username', '?')
                     with self._peer_lock:
                         if ip not in self._peers:
@@ -563,7 +677,8 @@ class ChatBackend:
                                 tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                                 tcp.settimeout(5)
                                 tcp.connect((ip, self.tcp_port))
-                                tcp.send(json.dumps({"type":"handshake","username":self.username}).encode())
+                                tcp.send(json.dumps(self._secure_packet(
+                                    {"type":"handshake","username":self.username})).encode())
                                 self._peers[ip] = (tcp, name)
                                 self._mesh_ok = True
                                 t = threading.Thread(target=self._mesh_peer, args=(tcp, ip, name), daemon=True)
@@ -582,19 +697,25 @@ class ChatBackend:
         while self.running:
             try:
                 c, addr = s.accept()
+                c.settimeout(3)
+                accepted = False
                 with self._peer_lock:
                     if addr[0] not in self._peers:
                         try:
                             d = c.recv(4096).decode()
                             h = json.loads(d)
-                            if h.get('type') == 'handshake':
+                            h = self._verify_packet(h)
+                            if h and h.get('type') == 'handshake':
                                 name = h.get('username', '?')
                                 self._peers[addr[0]] = (c, name)
                                 self._mesh_ok = True
                                 t = threading.Thread(target=self._mesh_peer, args=(c, addr[0], name), daemon=True)
                                 t.start()
+                                accepted = True
                         except (json.JSONDecodeError, OSError):
                             pass
+                if not accepted:
+                    c.close()
             except socket.timeout:
                 pass
 
@@ -606,7 +727,8 @@ class ChatBackend:
                 if not d:
                     break
                 m = json.loads(d)
-                if m.get('type') == 'chat':
+                m = self._verify_packet(m)
+                if m and m.get('type') == 'chat':
                     self.add_message(name, m['text'], 'mesh')
             except (socket.timeout, json.JSONDecodeError):
                 continue
@@ -618,7 +740,9 @@ class ChatBackend:
 
     def _mesh_send(self, text):
         app_log(f"mesh_send start len={len(text)}")
-        p = json.dumps({"type":"chat","text":text})
+        if not self._mesh_enabled:
+            return
+        p = json.dumps(self._secure_packet({"type":"chat","text":text}))
         with self._peer_lock:
             dead = []
             for ip, (sock, _) in self._peers.items():
@@ -860,16 +984,19 @@ class ChatDisplay:
         t = self.theme
         self.p.clear(t['BG'])
         if self._ttf:
-            tw = self.p.ttf_width("DarkSec-Chat", self._font, 28)
-            self.p.draw_ttf((self.W-tw)//2, 48, "DarkSec-Chat", t['TITLE'], self._font, 28)
-            tw = self.p.ttf_width("Pager Web + Mesh Chat", self._font, 16)
-            self.p.draw_ttf((self.W-tw)//2, 88, "Pager Web + Mesh Chat", t['MUTED'], self._font, 16)
-            tw = self.p.ttf_width(t['name'], self._font, 11)
-            self.p.draw_ttf((self.W-tw)//2, 115, t['name'], t['WEB'], self._font, 11)
+            title = "DARKSEC // CHAT"
+            tw = self.p.ttf_width(title, self._font, 28)
+            self.p.draw_ttf((self.W-tw)//2, 42, title, t['TITLE'], self._font, 28)
+            subtitle = "WEB + MESH UPLINK"
+            tw = self.p.ttf_width(subtitle, self._font, 15)
+            self.p.draw_ttf((self.W-tw)//2, 82, subtitle, t['MUTED'], self._font, 15)
+            status = "[ INITIALIZING SECURE CHANNEL ]"
+            tw = self.p.ttf_width(status, self._font, 11)
+            self.p.draw_ttf((self.W-tw)//2, 112, status, t['OK'], self._font, 11)
         else:
-            self.p.draw_text_centered(55, "DarkSec-Chat", t['TITLE'], 2)
-            self.p.draw_text_centered(85, "Pager Web + Mesh Chat", t['MUTED'], 1)
-            self.p.draw_text_centered(105, t['name'], t['WEB'], 1)
+            self.p.draw_text_centered(50, "DARKSEC // CHAT", t['TITLE'], 2)
+            self.p.draw_text_centered(82, "WEB + MESH UPLINK", t['MUTED'], 1)
+            self.p.draw_text_centered(105, "[ INITIALIZING ]", t['OK'], 1)
         self.p.flip()
         time.sleep(0.5)
 
@@ -1080,11 +1207,21 @@ class ChatDisplay:
 
             if sp_idx >= 0:
                 if pressed & Pager.BTN_UP:
+                    c = round(sp_idx * (len(self.KBD_KEYS[rows-1])-1) /
+                              max(1, len(self.KBD_SPECIAL)-1))
                     sp_idx = -1
-                elif pressed & Pager.BTN_LEFT and sp_idx > 0:
-                    sp_idx -= 1
-                elif pressed & Pager.BTN_RIGHT and sp_idx < len(self.KBD_SPECIAL)-1:
-                    sp_idx += 1
+                    r = rows-1
+                elif pressed & Pager.BTN_DOWN:
+                    # Wrap from the action row to the top character row while
+                    # keeping roughly the same horizontal position.
+                    c = round(sp_idx * (len(self.KBD_KEYS[0])-1) /
+                              max(1, len(self.KBD_SPECIAL)-1))
+                    r = 0
+                    sp_idx = -1
+                elif pressed & Pager.BTN_LEFT:
+                    sp_idx = (sp_idx - 1) % len(self.KBD_SPECIAL)
+                elif pressed & Pager.BTN_RIGHT:
+                    sp_idx = (sp_idx + 1) % len(self.KBD_SPECIAL)
                 elif pressed & Pager.BTN_A:
                     _, act = self.KBD_SPECIAL[sp_idx]
                     if act == 'shift':
@@ -1098,19 +1235,24 @@ class ChatDisplay:
                 elif pressed & Pager.BTN_B:
                     text = text[:-1]
             else:
-                if pressed & Pager.BTN_UP and r > 0:
-                    r -= 1
-                    c = min(c, len(self.KBD_KEYS[r])-1)
+                if pressed & Pager.BTN_UP:
+                    if r > 0:
+                        r -= 1
+                        c = min(c, len(self.KBD_KEYS[r])-1)
+                    else:
+                        sp_idx = round(c * (len(self.KBD_SPECIAL)-1) /
+                                       max(1, len(self.KBD_KEYS[r])-1))
                 elif pressed & Pager.BTN_DOWN:
                     if r < rows-1:
                         r += 1
                         c = min(c, len(self.KBD_KEYS[r])-1)
                     else:
-                        sp_idx = 0
-                elif pressed & Pager.BTN_LEFT and c > 0:
-                    c -= 1
-                elif pressed & Pager.BTN_RIGHT and c < len(self.KBD_KEYS[r])-1:
-                    c += 1
+                        sp_idx = round(c * (len(self.KBD_SPECIAL)-1) /
+                                       max(1, len(self.KBD_KEYS[r])-1))
+                elif pressed & Pager.BTN_LEFT:
+                    c = (c - 1) % len(self.KBD_KEYS[r])
+                elif pressed & Pager.BTN_RIGHT:
+                    c = (c + 1) % len(self.KBD_KEYS[r])
                 elif pressed & Pager.BTN_A:
                     key = self.KBD_KEYS[r][c]
                     text += key if shifted or not key.isalpha() else key.lower()

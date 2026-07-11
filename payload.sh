@@ -2,11 +2,19 @@
 # Title: DarkSec-Chat
 # Description: Themed DarkSec web + mesh chat for WiFi Pineapple Pager
 # Author: wickednull
-# Version: 3.1
+# Version: 3.1.0
 # Category: general
 # Library: libpagerctl.so (pagerctl)
 
-PAYLOAD_DIR="${_PAYLOAD_HOME:-}"
+APP_VERSION="3.1.0"
+
+# Prefer the directory containing this launcher.  Pager payloads can be
+# started through a /tmp stub, so _PAYLOAD_HOME remains the authoritative
+# fallback.  This prevents an older, similarly named install from being
+# selected merely because it appears first in the compatibility list.
+LAUNCHER_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+PAYLOAD_DIR="$LAUNCHER_DIR"
+[ -f "$PAYLOAD_DIR/darksec_chat.py" ] || PAYLOAD_DIR="${_PAYLOAD_HOME:-}"
 if [ -z "$PAYLOAD_DIR" ] || [ ! -f "$PAYLOAD_DIR/darksec_chat.py" ]; then
     for candidate in \
         /root/payloads/user/general/darksec-pineapple-chat \
@@ -22,7 +30,9 @@ DATA_DIR="$PAYLOAD_DIR/data"
 LOG_DIR="/root/loot/darksec-chat"
 LOG_FILE="$LOG_DIR/darksec_chat.log"
 RUNTIME_LIB_DIR="/tmp/darksec-chat-lib"
-mkdir -p "$DATA_DIR" "$LOG_DIR" "$RUNTIME_LIB_DIR"
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+rm -rf "$RUNTIME_LIB_DIR"
+mkdir -p "$RUNTIME_LIB_DIR"
 
 PAGERCTL_PY=""
 PAGERCTL_SO=""
@@ -47,7 +57,7 @@ export PATH="/mmc/usr/bin:$PATH"
 export PYTHONPATH="$RUNTIME_LIB_DIR:$PAYLOAD_DIR:$PYTHONPATH"
 export LD_LIBRARY_PATH="$RUNTIME_LIB_DIR:/mmc/usr/lib:/mmc/lib:$LD_LIBRARY_PATH"
 [ -f "$PAYLOAD_DIR/config.sh" ] && . "$PAYLOAD_DIR/config.sh"
-export WEB_API_URL USERNAME UDP_PORT TCP_PORT
+export WEB_API_URL USERNAME UDP_PORT TCP_PORT MESH_SHARED_KEY
 
 PYTHON="$(command -v python3)"
 if [ -z "$PYTHON" ] || ! "$PYTHON" -c "import ctypes" 2>/dev/null; then
@@ -61,9 +71,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-LOG green "DarkSec-Chat 3.1"
-LOG white "A = start"
-LOG white "B = exit"
+LOG cyan  "[ DARKSEC // CHAT ]"
+LOG white "Secure web + mesh console"
+LOG green "A  INITIALIZE"
+LOG red   "B  ABORT"
 while true; do
     BUTTON="$(WAIT_FOR_INPUT)"
     case "$BUTTON" in
@@ -74,13 +85,14 @@ done
 
 {
     echo "=== launch $(date) ==="
+    echo "APP_VERSION=$APP_VERSION"
     echo "PAYLOAD_DIR=$PAYLOAD_DIR"
     echo "PAGERCTL_PY=$PAGERCTL_PY"
     echo "PAGERCTL_SO=$PAGERCTL_SO"
     echo "PYTHON=$PYTHON"
 } > "$LOG_FILE"
 
-SPINNER_ID="$(START_SPINNER "Starting DarkSec-Chat...")"
+SPINNER_ID="$(START_SPINNER "Establishing DarkSec uplink...")"
 /etc/init.d/pineapplepager stop 2>/dev/null
 sleep 0.5
 STOP_SPINNER "$SPINNER_ID" 2>/dev/null
